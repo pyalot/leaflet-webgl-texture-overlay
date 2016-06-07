@@ -6071,21 +6071,18 @@ var tessellate = function(loops)
     if (loops.length === 0)
         throw "Expected at least one loop";
 
-    var vertices = loops;
+    var vertices = [];
     var boundaries = [0];
 
-    boundaries.push(vertices.length);
-    /*for (var l=0; l<loops.length; ++l) {
+    for (var l=0; l<loops.length; ++l) {
         var loop = loops[l];
         if (loop.length % 2 !== 0)
             throw "Expected even number of coordinates";
-        // vertices.push.apply(vertices, loop);
-        vertices = vertices.concat( Array.prototype.slice.call( loop ) );
-        // Array.prototype.push.apply(vertices, loop);
-    }*/
-      
-    var p = Module._malloc(vertices.length * 8);
+        vertices.push.apply(vertices, loop);
+        boundaries.push(vertices.length);
+    }
 
+    var p = Module._malloc(vertices.length * 8);
 
     for (i=0; i<vertices.length; ++i)
         Module.setValue(p+i*8, vertices[i], "double");
@@ -6110,6 +6107,7 @@ var tessellate = function(loops)
 
     var result_vertices = new Float64Array(nverts * 2);
     var result_triangles = new Int32Array(ntris * 3);
+
     for (i=0; i<2*nverts; ++i) {
         result_vertices[i] = Module.getValue(pcoordinates_out + i*8, 'double');
     }
@@ -6413,11 +6411,13 @@ sys.defModule('/clip/module', function(exports, require, fs) {
         colorWrite: [false, false, false, true]
       });
       this.dirty = false;
+      this.haveFills = false;
+      this.haveHoles = false;
     }
 
     ClipRegion.prototype.check = function() {
       if (this.dirty && (this.overlay.map != null) && (this.data != null)) {
-        this._tessellate();
+        this.upload();
         return true;
       } else {
         return false;
@@ -6426,8 +6426,12 @@ sys.defModule('/clip/module', function(exports, require, fs) {
 
     ClipRegion.prototype.draw = function(southWest, northEast, verticalSize, verticalOffset) {
       this.clear.draw();
-      this.fill.float('verticalSize', verticalSize).float('verticalOffset', verticalOffset).vec2('slippyBounds.southWest', southWest.x, southWest.y).vec2('slippyBounds.northEast', northEast.x, northEast.y).draw();
-      return this.holes.float('verticalSize', verticalSize).float('verticalOffset', verticalOffset).vec2('slippyBounds.southWest', southWest.x, southWest.y).vec2('slippyBounds.northEast', northEast.x, northEast.y).draw();
+      if (this.haveFills) {
+        this.fill.float('verticalSize', verticalSize).float('verticalOffset', verticalOffset).vec2('slippyBounds.southWest', southWest.x, southWest.y).vec2('slippyBounds.northEast', northEast.x, northEast.y).draw();
+      }
+      if (this.haveHoles) {
+        return this.holes.float('verticalSize', verticalSize).float('verticalOffset', verticalOffset).vec2('slippyBounds.southWest', southWest.x, southWest.y).vec2('slippyBounds.northEast', northEast.x, northEast.y).draw();
+      }
     };
 
     ClipRegion.prototype.set = function(data) {
@@ -6436,87 +6440,40 @@ sys.defModule('/clip/module', function(exports, require, fs) {
     };
 
     ClipRegion.prototype.project = function(coords) {
-      var i, item, result, x, y, _i, _len, _ref,
-        map = this.overlay.map,
-        crs = map.options.crs,
-        project = crs.latLngToPoint.bind( crs );
-
-        var start = performance.now();
-      result = [];
-
-      for (i = _i = 0, _len = coords.length; _i < _len; i = ++_i) {
-        item = coords[i];
-        _ref = project({
-          lat : item[1], 
-          lng : item[0] 
-        }, 0);
-        result.push( _ref.x / 256 );
-        result.push( _ref.y / 256 );
-      }
-
-      console.log('project time: ', performance.now() - start);
-
-      return result;
-    };
-
-    ClipRegion.prototype.tessellateCoords = function(coords) {
-      var i, idx, mesh, vertices, _i, _len, _ref;
-      mesh = tessellate.tessellate( this.project(coords) );
-      vertices = new Float32Array(mesh.triangles.length * 2);
-      _ref = mesh.triangles;
-      for (i = _i = 0, _len = _ref.length; _i < _len; i = ++_i) {
-        idx = _ref[i];
-        vertices[i * 2 + 0] = mesh.vertices[idx * 2 + 0];
-        vertices[i * 2 + 1] = mesh.vertices[idx * 2 + 1];
-      }
-      return vertices;
-    };
-
-    ClipRegion.prototype.collate = function(arrays) {
-      var array, length, offset, result, _i, _j, _len, _len1;
-      length = 0;
-      for (_i = 0, _len = arrays.length; _i < _len; _i++) {
-        array = arrays[_i];
-        length += array.length;
-      }
-      result = new Float32Array(length);
-      offset = 0;
-      for (_j = 0, _len1 = arrays.length; _j < _len1; _j++) {
-        array = arrays[_j];
-        result.set(array, offset);
-        offset += array.length;
-      }
-      return result;
-    };
-
-    ClipRegion.prototype._tessellate = function() {
-      if (!this.raf) {
-        this.raf = requestAnimationFrame(this.tessellate.bind(this));
+      var i, x, y, _i, _ref, _ref1;
+      for (i = _i = 0, _ref = coords.length; _i < _ref; i = _i += 2) {
+        _ref1 = this.overlay.map.project({
+          lat: coords[i + 1],
+          lng: coords[i]
+        }, 0).divideBy(256), x = _ref1.x, y = _ref1.y;
+        coords[i] = x;
+        coords[i + 1] = y;
       }
     };
 
-    ClipRegion.prototype.tessellate = function() {
-      var fills, holes, i, region, startTime, _i, _j, _len, _ref, _ref1;
+    ClipRegion.prototype.upload = function() {
+      var fillTriangleCount, fillValueCount, fillVertexCount, fills, holes, intView;
       this.dirty = false;
-      startTime = performance.now();
-      fills = [];
-      holes = [];
-      if (typeof(this.data[0][0][0]) === 'number') {
-        _ref = [this.data];
+      intView = new Int32Array(this.data);
+      fillTriangleCount = intView[0];
+      fillVertexCount = fillTriangleCount * 3;
+      fillValueCount = fillVertexCount * 2;
+      fills = new Float32Array(this.data, 4, fillValueCount).slice();
+      holes = new Float32Array(this.data, 4 + fills.byteLength).slice();
+      if (fills.length > 0) {
+        this.haveFills = true;
+        this.project(fills);
+        this.fill.vertices(fills);
       } else {
-        _ref = this.data;
+        this.haveFills = false;
       }
-      for (i = _i = 0, _len = _ref.length; _i < _len; i = ++_i) {
-        region = _ref[i];
-        fills.push(this.tessellateCoords(region[0]));
-        for (i = _j = 1, _ref1 = region.length; 1 <= _ref1 ? _j < _ref1 : _j > _ref1; i = 1 <= _ref1 ? ++_j : --_j) {
-          holes.push(this.tessellateCoords(region[i]));
-        }
+      if (holes.length > 0) {
+        this.haveHoles = true;
+        this.project(holes);
+        return this.holes.vertices(holes);
+      } else {
+        return this.haveHoles = false;
       }
-      this.fill.vertices(this.collate(fills));
-      this.holes.vertices(this.collate(holes));
-      this.raf = null;
-      return this.overlay.dirty = true;
     };
 
     return ClipRegion;
@@ -6535,7 +6492,6 @@ sys.defModule('/module', function(exports, require, fs) {
     function WebGLTextureOverlay() {
       this.draw = __bind(this.draw, this);
       this.canvas = L.DomUtil.create('canvas', 'leaflet-webgl-texture-overlay');
-      this.canvas.style.position = 'absolute';
       this.gf = new WebGLFramework({
         canvas: this.canvas,
         premultipliedAlpha: false
@@ -6561,6 +6517,8 @@ sys.defModule('/module', function(exports, require, fs) {
       this.canvas.height = size.y;
       L.DomUtil.addClass(this.canvas, 'leaflet-zoom-animated');
       this.map.getPanes().overlayPane.appendChild(this.canvas);
+      this.map.on('movestart', this.move, this);
+      this.map.on('move', this.move, this);
       this.map.on('moveend', this.move, this);
       this.map.on('resize', this.resize, this);
       return this.map.on('zoomanim', this.zoomanim, this);
@@ -6574,6 +6532,8 @@ sys.defModule('/module', function(exports, require, fs) {
     WebGLTextureOverlay.prototype.onRemove = function(map) {
       this.running = false;
       map.getPanes().overlayPane.removeChild(this.canvas);
+      this.map.off('movestart', this.move, this);
+      this.map.off('move', this.move, this);
       this.map.off('moveend', this.move, this);
       this.map.off('resize', this.resize, this);
       this.map.off('zoomanim', this.zoomanim, this);

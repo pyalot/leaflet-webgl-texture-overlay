@@ -36,6 +36,16 @@
                 };
                 xhr.send();
             }
+            
+            $.getBuffer = function(path, onload){
+                var xhr = new XMLHttpRequest();
+                xhr.open('GET', path, true);
+                xhr.responseType = 'arraybuffer';
+                xhr.onload = function(){
+                    onload(xhr.response);
+                };
+                xhr.send();
+            }
 
             var map;
 
@@ -69,7 +79,7 @@
                 setInterpolation();
 
                 var setClip = function(){
-                    $.getJSON(clipSelect.val(), function(clipRegion){
+                    $.getBuffer(clipSelect.val(), function(clipRegion){
                         overlay.setClip(clipRegion);
                     });
                 };
@@ -80,19 +90,19 @@
                     .change(setClip);
 
                 $('<option></option>')
-                    .text('data/large-multipolygon.json')
+                    .text('data/polygon-holes.vertices')
                     .appendTo(clipSelect);
                 $('<option></option>')
-                    .text('data/polygon-no-holes.json')
+                    .text('data/large-multipolygon.vertices')
                     .appendTo(clipSelect);
                 $('<option></option>')
-                    .text('data/polygon-holes.json')
+                    .text('data/polygon-no-holes.vertices')
                     .appendTo(clipSelect);
                 $('<option></option>')
-                    .text('data/multipolygon-no-holes.json')
+                    .text('data/multipolygon-no-holes.vertices')
                     .appendTo(clipSelect);
                 $('<option></option>')
-                    .text('data/multipolygon-holes.json')
+                    .text('data/multipolygon-holes.vertices')
                     .appendTo(clipSelect);
                 setClip();
 
